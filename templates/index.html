@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Controller</title>
+</head>
+<body>
+    <h1>Controller</h1>
+    <p>Interfaz gráfica del controlador</p>
+
+    <table border="1" cellpadding="5" cellspacing="0">
+        <thead>
+            <tr>
+                <th>gnbId (hex)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{ range .datos }}
+            <tr>
+                <td>{{ toHex .GnbID }}</td>
+            </tr>
+            {{ else }}
+            <tr>
+                <td colspan="1">No hay datos recibidos aún.</td>
+            </tr>
+            {{ end }}
+        </tbody>
+    </table>
+</body>
+</html>
