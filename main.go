@@ -1,63 +1,52 @@
 package main
 
 import (
-	"fmt"
-	"html/template"
-	"net/http"
+	"log"
+	"os/exec"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/krepox/Controller/api"
+	dhcp "github.com/krepox/Controller/dhcpserver"
 )
 
-type AgfId struct {
-	GnbID string `json:"gnbId" binding:"required"`
-}
-
-var agfIds []AgfId
-
-type Usuario struct {
-	Supi        string `json:"supi"`
-	AmfUeNgapId int64  `json:"amfuengapid"`
-}
-
-//var user Usuario
-
 func main() {
+	go dhcp.StartDHCPServer("enp1s0np0np0")
+	// Iniciar el frontend en segundo plano
+	go startFrontend()
+
 	router := gin.Default()
 
-	router.SetFuncMap(template.FuncMap{
-		"toHex": func(s string) string {
-			// Convierte cada byte de la cadena a formato hexadecimal
-			return fmt.Sprintf("%x", s)
-		},
-	})
+	// Configuración CORS para permitir solicitudes desde cualquier origen
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:5173", "http://138.4.21.21:5173"}, // Permitir estos orígenes
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
 
-	router.LoadHTMLGlob("templates/*")
+	// Servir archivos estáticos desde frontend/dist
+	router.Static("/assets", "./frontend/dist/assets")
 
-	// Ruta para mostrar la plantilla index.html
-	router.GET("/", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "index.html", gin.H{
-			"title": "Página Principal",
-			"datos": agfIds,
-		})
-	})
+	// Cargar el index.html generado por React
+	router.LoadHTMLFiles("./frontend/dist/index.html")
 
-	// Endpoint POST para recibir y almacenar datos
-	router.POST("/AGF_registration", func(c *gin.Context) {
-		var d AgfId
-		// Deserializa el JSON recibido
-		if err := c.ShouldBindJSON(&d); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+	// Registrar rutas desde el módulo `api`
+	api.RegisterRoutes(router)
 
-		// Almacena el dato recibido (podrías usar una base de datos o similar en un caso real)
-		agfIds = append(agfIds, d)
+	log.Println("Servidor escuchando en http://localhost:8080")
+	router.Run("0.0.0.0:8080")
+}
 
-		// Devuelve una respuesta de éxito
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Datos almacenados correctamente",
-			"gnbId":   d.GnbID,
-		})
-	})
-	router.Run() // listen and serve on 0.0.0.0:8080
+// startFrontend ejecuta el comando `npm run dev` para iniciar el frontend
+func startFrontend() {
+	// Cambia a la carpeta del frontend
+	cmd := exec.Command("npm", "run", "dev", "--", "--host")
+	cmd.Dir = "./frontend"
+
+	// Ejecutar el frontend y capturar la salida
+	err := cmd.Run()
+	if err != nil {
+		log.Fatalf("Error al ejecutar frontend: %v", err)
+	}
 }

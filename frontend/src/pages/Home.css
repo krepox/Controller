@@ -1,0 +1,71 @@
+/* Home.css */
+
+.home-container {
+    padding: 2rem;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* Mejor tipografía */
+    background-color: #f7f9fc;
+    max-width: 1200px;
+    margin: 0 auto;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+  
+  h1 {
+    font-size: 2.5rem;
+    color: #2c3e50;
+    margin-bottom: 1rem;
+    font-weight: 600;
+  }
+  
+  p {
+    font-size: 1.2rem;
+    color: #7f8c8d;
+    margin-bottom: 2rem;
+  }
+  
+  table {
+    width: 20%; /* Hacemos la tabla más ancha */
+    border-collapse: collapse;
+    margin-top: 1.5rem;
+    background-color: #fff;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+  
+  th, td {
+    padding: 12px 20px; /* Espaciado más grande */
+    text-align: left;
+    border: 1px solid #ecf0f1;
+  }
+  
+  th {
+    background-color: #3498db; /* Azul profesional */
+    color: white;
+    font-size: 1.1rem;
+    font-weight: 500;
+  }
+  
+  tbody tr:nth-child(even) {
+    background-color: #f9f9f9;
+  }
+  
+  tbody tr:hover {
+    background-color: #eaf2f8; /* Un azul muy suave para el hover */
+  }
+  
+  .no-data {
+    text-align: center;
+    color: #bdc3c7;
+    font-style: italic;
+  }
+  
+  @media (max-width: 768px) {
+    .home-container {
+      padding: 1rem;
+    }
+  
+    table {
+      font-size: 0.9rem;
+    }
+  }
