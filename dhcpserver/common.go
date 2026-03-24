@@ -69,54 +69,45 @@ var ServerIP dhcpIP
 
 var addressLeaseTime int = 60 // TODO: Cambiar esto a un valor más razonable (en segundos)
 
-// cambiamos esta función para recibir directamente la Ip que queremos asignar (añadimos assignedIP)
 func NewOfferFromDiscover(discover *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4, error) {
-
 	macAddr := ([6]byte)(discover.ClientHWAddr)
+
+	newIP := GetAssignedIP() // Obtain user new IP
 
 	clients.Mutex.RLock()
 	client, ok := clients.Value[macAddr]
 	clients.Mutex.RUnlock()
 
 	// Discover is ignored if there is an ongoing request
-	if ok && (client.State == CodeRecvDiscover || client.State == CodeRecvRequest ||
-		client.State == CodeRecvRelease) {
-		return nil, fmt.Errorf("ongoing request for this client")
+	if ok && (client.State == CodeRecvDiscover || client.State == CodeRecvRequest || client.State == CodeRecvRelease) {
+		return nil, fmt.Errorf("Ongoing request for this client")
 	}
 
 	if !ok {
-		client = ClientInfo{ // TODO: Add 5G here (https://github.com/Rotchamar/STGUTG/blob/feature/agf-dhcp/src/stgutg/dhcp.go)
-			//IP: net.IPv4(10, 2, 0, 100), // nil
-			IP:                 GetAssignedIP(),
+		client = ClientInfo{
+			IP:                 newIP,
 			State:              CodeRecvDiscover,
 			SessionEstablished: false,
 		}
-		log.Printf("[NewOfferFromDiscover] Asignando IP %s al cliente %s", client.IP, macAddr)
-		// TODO: Probando el forcerenew
+		log.Printf("[NewOfferFromDiscover] New client %x: IP assigned: %s", macAddr, newIP)
+
 		go func() {
 			time.Sleep(15 * time.Second)
 			SendForceRenew(macAddr, clients)
 		}()
 	} else {
+
 		client.State = CodeRecvDiscover
-		//client.IP = assignedIP //actualizamos la IP si ya existía
+		client.IP = newIP
+		log.Printf("[NewOfferFromDiscover] Existing Client %x: updating IP to: %s", macAddr, newIP)
 	}
 
 	client.ValidForcerenewNonce = false // Required for resetting the Nonce for new connections
 	client.TransactionID = discover.TransactionID
 
-	// The state is set so that no other discover is processed
 	clients.Mutex.Lock()
 	clients.Value[macAddr] = client
 	clients.Mutex.Unlock()
-
-	// If !ok 						-> register, establish session and establish DHCP
-	// If ok && !SessionEstablished -> establish session and establish DHCP
-	// If ok && SessionEstablished	-> establish DHCP
-
-	// TODO: Add 5G here (https://github.com/Rotchamar/STGUTG/blob/feature/agf-dhcp/src/stgutg/dhcp.go) (ejemplo antiguo)
-
-	// Establish DCHP
 
 	offer, err := dhcpv4.New()
 	if err != nil {
@@ -129,28 +120,25 @@ func NewOfferFromDiscover(discover *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DH
 	offer.Flags = discover.Flags
 	offer.GatewayIPAddr = discover.GatewayIPAddr
 	offer.ClientHWAddr = discover.ClientHWAddr
-
 	offer.YourIPAddr = client.IP
-
 	offer.ServerHostName = "AGF\x00"
 
 	offer.Options = dhcpv4.OptionsFromList(
 		dhcpv4.Option{Code: dhcpv4.OptionDHCPMessageType, Value: dhcpv4.MessageTypeOffer},
 		dhcpv4.Option{Code: dhcpv4.OptionServerIdentifier, Value: ServerIP},
 		dhcpv4.Option{Code: dhcpv4.OptionIPAddressLeaseTime, Value: leaseTime(addressLeaseTime)},
-		dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{0xff, 0xff, 0xff, 0x00})},
+		//dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{0xff, 0xff, 0xff, 0x00})},
+		dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{255, 255, 255, 192})}, // CORREGIDO
 		dhcpv4.Option{Code: dhcpv4.OptionClasslessStaticRoute, Value: dhcpIP(append([]byte{0x00}, ServerIP.ToBytes()...))},
 		dhcpv4.Option{Code: dhcpv4.OptionForcerenewNonceCapable, Value: dhcpv4.AlgorithmHMAC_MD5},
 	)
 
 	client.State = CodeSentOffer
-
 	clients.Mutex.Lock()
 	clients.Value[macAddr] = client
 	clients.Mutex.Unlock()
 
 	return offer, nil
-
 }
 
 func NewAckFromRequest(request *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4, error) {
@@ -167,14 +155,21 @@ func NewAckFromRequest(request *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4
 		return nil, fmt.Errorf("ongoing discover/request")
 	}
 
+	// Check if client request the assigned IP
+	requestedIP := request.RequestedIPAddress()
+	if requestedIP != nil && !requestedIP.Equal(client.IP) {
+		log.Printf(" IP requested (%s) differs from assigned IP (%s) to the client %x. Enviando NAK.",
+			requestedIP, client.IP, macAddr)
+		return generateNAK(macAddr, request.TransactionID)
+	}
+
 	// A NAK message is generated if there isn't an existing established session
 	if !ok { // !ok || (ok && !client.SessionEstablished)
 		return generateNAK(macAddr, request.TransactionID)
 	}
 
 	// The state is modified so that no other discover is processed
-	client.State = CodeRecvRequest // TODO: dependiendo de la situación, esto puede llegar a cascar si varias requests llegan a la vez (creo)
-	// se puede solucionar metiendo todo este bloque dentro del mutex, pero toca ver el impacto en el rendimiento
+	client.State = CodeRecvRequest //TODO: Check if supports simultaneous request
 
 	clients.Mutex.Lock()
 	clients.Value[macAddr] = client
@@ -200,7 +195,8 @@ func NewAckFromRequest(request *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4
 		dhcpv4.Option{Code: dhcpv4.OptionDHCPMessageType, Value: dhcpv4.MessageTypeAck},
 		dhcpv4.Option{Code: dhcpv4.OptionServerIdentifier, Value: ServerIP},
 		dhcpv4.Option{Code: dhcpv4.OptionIPAddressLeaseTime, Value: leaseTime(addressLeaseTime)},
-		dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{0xff, 0xff, 0xff, 0x00})},
+		//dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{0xff, 0xff, 0xff, 0x00})},
+		dhcpv4.Option{Code: dhcpv4.OptionSubnetMask, Value: dhcpIP([]byte{255, 255, 255, 192})},                            // CORREGIDO
 		dhcpv4.Option{Code: dhcpv4.OptionClasslessStaticRoute, Value: dhcpIP(append([]byte{0x00}, ServerIP.ToBytes()...))}, // TODO: Cambiar el default gateway cuando sea necesario
 	)
 
@@ -227,6 +223,8 @@ func NewAckFromRequest(request *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4
 		client.ValidForcerenewNonce = true
 	}
 
+	log.Printf("Sending ACK to client %x with IP %s", macAddr, client.IP)
+
 	client.State = CodeSentAck
 
 	clients.Mutex.Lock()
@@ -237,7 +235,7 @@ func NewAckFromRequest(request *dhcpv4.DHCPv4, clients *Clients) (*dhcpv4.DHCPv4
 
 }
 
-func ReleaseClient(release *dhcpv4.DHCPv4, clients *Clients) { // TODO: quitarlo tambien del AGF y del core
+func ReleaseClient(release *dhcpv4.DHCPv4, clients *Clients) {
 	macAddr := ([6]byte)(release.ClientHWAddr)
 
 	clients.Mutex.RLock()

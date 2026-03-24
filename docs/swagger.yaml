@@ -1,0 +1,254 @@
+basePath: /
+definitions:
+  api.AgfId:
+    properties:
+      gnbId:
+        type: string
+    required:
+    - gnbId
+    type: object
+  api.RegisterNewUserPayload:
+    properties:
+      gnbId:
+        type: string
+      supi:
+        type: string
+    required:
+    - gnbId
+    - supi
+    type: object
+  api.User:
+    properties:
+      gnb_id:
+        type: string
+      imsi:
+        type: string
+      supi:
+        type: string
+    required:
+    - gnb_id
+    - imsi
+    - supi
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API REST para gestionar AGFs, UEs y la movilidad.
+  title: Controlador AGF API
+  version: "1.0"
+paths:
+  /AGF_registration:
+    post:
+      consumes:
+      - application/json
+      description: Registra un AGF con su GNB ID
+      parameters:
+      - description: AGF ID
+        in: body
+        name: agf
+        required: true
+        schema:
+          $ref: '#/definitions/api.AgfId'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Registrar un AGF
+      tags:
+      - AGF
+  /agfs:
+    get:
+      description: Lista los AGFs que se han registrado
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/api.AgfId'
+              type: array
+            type: object
+      summary: Obtener AGFs registrados
+      tags:
+      - AGF
+  /registerNewUser:
+    post:
+      consumes:
+      - application/json
+      description: Registra un nuevo usuario (UE) y lo vincula a un AGF existente.
+      parameters:
+      - description: Datos del usuario
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.RegisterNewUserPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Registra nuevo usuario
+      tags:
+      - Usuarios
+  /triggerDHCP:
+    post:
+      consumes:
+      - application/json
+      description: Inicia el cliente DHCP en un UE con IP y destino
+      parameters:
+      - description: IP y GNB de destino
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Lanzar cliente DHCP
+      tags:
+      - DHCP
+  /triggerHandover:
+    post:
+      consumes:
+      - application/json
+      description: Solicita el Handover de un usuario a un nuevo AGF destino
+      parameters:
+      - description: SUPI del usuario y GNB destino
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Activar Handover
+      tags:
+      - Handover
+  /user_registration:
+    post:
+      consumes:
+      - application/json
+      description: Registra un nuevo usuario (UE) en un AGF
+      parameters:
+      - description: Usuario a registrar
+        in: body
+        name: user
+        required: true
+        schema:
+          $ref: '#/definitions/api.User'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Registrar un usuario
+      tags:
+      - Usuario
+  /users:
+    get:
+      description: Lista todos los usuarios registrados
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/api.User'
+              type: array
+            type: object
+      summary: Obtener usuarios registrados
+      tags:
+      - Usuario
+schemes:
+- http
+swagger: "2.0"

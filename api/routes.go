@@ -20,83 +20,147 @@ type User struct {
 	GnbID string `json:"gnb_id" binding:"required"`
 }
 
+type triggerDHCPPayload struct {
+	UeIP        string `json:"ue" 	 binding:"required"`  //User IP
+	TargetGnbID string `json:"gnbId" binding:"required"` //To set new IP depending on T-AGF
+	Supi        string `json:"supi"  binding:"required"` // UE identifier
+}
+
+// HandoverCompletedPayload define la estructura que el servidor DHCP
+// le enviará al controlador después de recibir el ACK con la nueva IP.
+type HandoverCompleted struct {
+	Supi  string `json:"supi"`
+	GnbId string `json:"gnbId"` // solo viene el DESTINO
+}
+
+// Rrecibe el Supi y el gnbid del target AGF para enviarle la petición de registrar el nuevo usuario
+type RegisterNewUserPayload struct {
+	Supi  string `json:"supi"  binding:"required"`
+	GnbId string `json:"gnbId" binding:"required"`
+}
+
 var agfIds []AgfId
 
-// var users []User
-var users = make([]User, 0)         // slice para listar
+var users = make([]User, 0)         // slice to list users
 var userMap = make(map[string]User) // key = supi
 
-// RegisterRoutes agrega las rutas al router principal
+// API routes
 func RegisterRoutes(router *gin.Engine) {
 	router.GET("/agfs", getAgfs)
 	router.POST("/AGF_registration", registerAgf)
 	router.POST("/triggerDHCP", triggerDHCP)
 	router.POST("/user_registration", registerUser)
 	router.GET("/users", getUsers)
-	router.POST("/triggerHandover", triggerHandover) //endpoint para iniciar el H0 en un AGF
+	router.POST("/triggerHandover", triggerHandover) //endpoint to trigger H.O. on S-AGF
+	//router.POST("/handoverCompleted", handleHandoverCompleted)
+
+	// Nuevo endpoint para avisar al AGF destino que registre un nuevo usuario
+	router.POST("/registerNewUser", handleRegisterNewUser)
 }
 
+// @Summary Obtener AGFs registrados
+// @Description Lista los AGFs que se han registrado
+// @Tags AGF
+// @Produce json
+// @Success 200 {object} map[string][]AgfId
+// @Router /agfs [get]
 func getAgfs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"agfs": agfIds})
 }
 
+// @Summary Registrar un AGF
+// @Description Registra un AGF con su GNB ID
+// @Tags AGF
+// @Accept json
+// @Produce json
+// @Param agf body AgfId true "AGF ID"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]string
+// @Router /AGF_registration [post]
 func registerAgf(c *gin.Context) {
 	var d AgfId
 	if err := c.ShouldBindJSON(&d); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Check whether AGF already exist
+	for _, agf := range agfIds {
+		if agf.GnbID == d.GnbID {
+			c.JSON(http.StatusOK, gin.H{
+				"message": "AGF ya estaba registrado",
+				"gnbId":   d.GnbID,
+			})
+			return
+		}
+	}
+
 	agfIds = append(agfIds, d)
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Datos almacenados correctamente",
+		"message": "AGF registrado correctamente",
 		"gnbId":   d.GnbID,
 	})
 }
 
-/*
-	func registerUser(c *gin.Context) {
-		var u User
-		if err := c.ShouldBindJSON(&u); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		users = append(users, u)
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Usuario registrado correctamente",
-			"imsi":    u.IMSI,
-			"gnb_id":  u.GnbID,
-		})
-	}
-*/
+// @Summary Registrar un usuario
+// @Description Registra un nuevo usuario (UE) en un AGF
+// @Tags Usuario
+// @Accept json
+// @Produce json
+// @Param user body User true "Usuario a registrar"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]string
+// @Router /user_registration [post]
 func registerUser(c *gin.Context) {
 	var u User
 	if err := c.ShouldBindJSON(&u); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Check whether user already exist
+	if _, exists := userMap[u.Supi]; exists {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Usuario ya estaba registrado",
+			"supi":    u.Supi,
+		})
+		return
+	}
+
 	users = append(users, u)
 	userMap[u.Supi] = u
-	c.JSON(http.StatusOK, gin.H{"message": "Usuario registrado", "supi": u.Supi})
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Usuario registrado correctamente",
+		"supi":    u.Supi,
+	})
 }
 
+// @Summary Obtener usuarios registrados
+// @Description Lista todos los usuarios registrados
+// @Tags Usuario
+// @Produce json
+// @Success 200 {object} map[string][]User
+// @Router /users [get]
 func getUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
-// se modifica la función ya que ahora es un POST
-// necesitamos saber cual es la Ip del usuario para enviarla como param, en vez de ponerla a mano con el curl
-// el AGF tiene la Ip guardada en el teidupf
-// hay que buscar una forma de que el controlador sepa las Ips de los usuarios, ya que, cuando se registran los usuasrios se hace por imsi y supi (forma de identificarlos)
+// @Summary Lanzar cliente DHCP
+// @Description Inicia el cliente DHCP en un UE con IP y destino
+// @Tags DHCP
+// @Accept json
+// @Produce json
+// @Param payload body map[string]string true "IP y GNB de destino"
+// @Success 200 {object} map[string]string
+// @Failure 400,500 {object} map[string]string
+// @Router /triggerDHCP [post]
 func triggerDHCP(c *gin.Context) {
-	//aqui guardar el target gnbid para dependiendo ver a que ip moverlo
-	// Esperamos un JSON con el campo "ue" (IP del usuario)
-	var payload struct {
-		UeIP        string `json:"ue"`
-		TargetGnbID string `json:"gnbId"`
-	}
 
-	if err := c.ShouldBindJSON(&payload); err != nil || payload.UeIP == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Falta parámetro 'ue'"})
+	var payload triggerDHCPPayload
+
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing some value"})
 		return
 	}
 
@@ -105,65 +169,52 @@ func triggerDHCP(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Cliente DHCP activado correctamente"})
-}
+	c.JSON(http.StatusOK, gin.H{"message": "DHCP Client active"})
 
-// triggerHandover activa el Handover del AGF
-/* func triggerHandover(c *gin.Context) {
-	var gnbPayload struct {
-		GnbId string `json:"gnbId"`
-	}
-
-	// Obtener el GNB ID del cuerpo de la solicitud
-	if err := c.ShouldBindJSON(&gnbPayload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	// Determinar la IP del AGF basándonos en el GNB ID
-	var agfIP string
-	switch gnbPayload.GnbId {
-	case "000102":
-		agfIP = "10.2.0.80"
+	//Send petition to AGF to register the user
+	var Source_agfIP string
+	switch payload.TargetGnbID {
 	case "000103":
-		agfIP = "10.2.0.85"
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "GnbId no reconocido"})
-		return
+		Source_agfIP = "10.2.0.24"
+	case "000102":
+		Source_agfIP = "10.2.0.86"
 	}
-	// Llamar al servidor AGF enviando una solicitud POST
-	url := fmt.Sprintf("http://%s:8082/triggerHandover", agfIP) // Usamos la IP dinámica del AGF
 
-	// Serializar el JSON para enviar al servidor AGF
-	jsonData, err := json.Marshal(gnbPayload)
+	url := fmt.Sprintf("http://%s:8082/deregisterUser", Source_agfIP)
+	reqBody, _ := json.Marshal(gin.H{"supi": payload.Supi})
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Crear una solicitud HTTP POST para el AGF
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Fatalf("Error al hacer la solicitud POST de inicio de handover: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Unreachable AGF"})
 		return
 	}
 	defer resp.Body.Close()
-	// Verificar respuesta
+
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error en respuesta al iniciar el handover %s", resp.Status)
-	} else {
-		log.Println("Handover iniciado exitosamente")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "AGF rechazó el deregister"})
+		return
 	}
-	// Responder al cliente que la solicitud de Handover fue procesada
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Handover activado correctamente en AGF",
-	})
+	log.Printf("SUPI %s deregistered in: %s", payload.Supi, Source_agfIP)
+	// ───────────────────────────────────────────────────────────────
+
+	c.JSON(http.StatusOK,
+		gin.H{"message": "Deregister send"})
 }
-*/
-// triggerHandover activa el Handover del AGF
+
+// @Summary Activar Handover
+// @Description Solicita el Handover de un usuario a un nuevo AGF destino
+// @Tags Handover
+// @Accept json
+// @Produce json
+// @Param payload body map[string]string true "SUPI del usuario y GNB destino"
+// @Success 200 {object} map[string]string
+// @Failure 400,404,502 {object} map[string]string
+// @Router /triggerHandover [post]
 func triggerHandover(c *gin.Context) {
-	// 1) Estructura que esperamos del frontend
+
 	type HandoverReq struct {
-		Supi  string `json:"supi"  binding:"required"`
-		GnbId string `json:"gnbId" binding:"required"` // este es el destino
+		Supi  string `json:"supi"  binding:"required"` // User identifier
+		GnbId string `json:"gnbId" binding:"required"` // T-AGF
 	}
 
 	var req HandoverReq
@@ -172,48 +223,48 @@ func triggerHandover(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Petición de Handover recibida - SUPI: %s, GNB destino: %s", req.Supi, req.GnbId)
+	log.Printf("Handover solicitation received - SUPI: %s, Target GNB: %s", req.Supi, req.GnbId)
 
-	// 2) Buscar el usuario en el mapa para saber en qué AGF está conectado ahora
 	user, ok := userMap[req.Supi]
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Usuario no encontrado"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	log.Printf("Usuario SUPI %s registrado en AGF origen (GNB ID): %s", user.Supi, user.GnbID)
+	log.Printf("User SUPI %s registered on Source AGF (GNB ID): %s", user.Supi, user.GnbID)
 
-	// 3) Resolver IP del AGF origen (donde está el UE actualmente)
+	//Resolve S-AGF IP
 	var agfIP string
 	switch user.GnbID {
+	// Vlannet I-face IPs
 	case "000102":
-		agfIP = "10.2.0.80"
+		agfIP = "10.2.0.24"
 	case "000103":
-		agfIP = "10.2.0.85"
+		agfIP = "10.2.0.86"
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "GnbID origen no reconocido"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Source GnbID not found"})
 		return
-	}
+	} //TODO: Extract IP from new AGFs directly in the registration
 
-	log.Printf("Enviando solicitud de HO al AGF origen con IP: %s", agfIP)
+	log.Printf("Sending HO solicitation al AGF origen con IP: %s", agfIP)
 
-	// 4) Enviar la estructura original (supi + gnb destino) al AGF origen
+	// Send SUPI + T-GNB to S-AGF
 	url := fmt.Sprintf("http://%s:8082/triggerHandover", agfIP)
 	jsonData, _ := json.Marshal(req)
 
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("Error al hacer POST al AGF origen: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "AGF inalcanzable"})
+		log.Printf("Error connecting to S-AGF: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "AGF unreachable"})
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error en respuesta del AGF: %s", resp.Status)
+		log.Printf("Error in S-AGF response: %s", resp.Status)
 	} else {
-		log.Println("Handover iniciado exitosamente en AGF origen")
-		// ACTUALIZAMOS el campo GnbID en memoria tras el HO exitoso
+		log.Println("Handover succesfully started in  S-AGF")
+		// Update GnbID after HO
 		user.GnbID = req.GnbId
 		userMap[req.Supi] = user
 		for i, u := range users {
@@ -222,12 +273,149 @@ func triggerHandover(c *gin.Context) {
 				break
 			}
 		}
-		log.Printf("SUPI %s movido exitosamente al AGF %s", req.Supi, req.GnbId)
+		log.Printf("SUPI %s move to new AGF %s", req.Supi, req.GnbId)
+	} //TODO: Get notification from S-AGF after succesfull H.O. procedure
 
-	}
-
-	// 5) Respuesta al frontend
 	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("Handover solicitado: SUPI %s ➜ GNB %s", req.Supi, req.GnbId),
+		"message": fmt.Sprintf("Handover requested: SUPI %s ➜ GNB %s", req.Supi, req.GnbId),
 	})
 }
+
+// handleRegisterNewUser registra un nuevo usuario en un AGF específico.
+// @Summary      Registra nuevo usuario
+// @Description  Registra un nuevo usuario (UE) y lo vincula a un AGF existente.
+// @Tags         Usuarios
+// @Accept       json
+// @Produce      json
+// @Param        payload  body  RegisterNewUserPayload  true  "Datos del usuario"
+// @Success      200      {object}  map[string]string
+// @Failure      400      {object}  map[string]string
+// @Failure      502      {object}  map[string]string
+// @Router       /registerNewUser [post]
+func handleRegisterNewUser(c *gin.Context) {
+	var payload RegisterNewUserPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "JSON inválido: falta supi o gnbId"})
+		return
+	}
+	log.Printf("[Controller] /registerNewUser recibido: SUPI=%s, GNB destino=%s",
+		payload.Supi, payload.GnbId)
+
+	// 1) Resuelve IP del AGF destino según payload.GnbId
+	var agfDestIP string
+	switch payload.GnbId {
+	case "000102":
+		agfDestIP = "10.2.0.24"
+	case "000103":
+		agfDestIP = "10.2.0.86"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown GnbId"})
+		return
+	}
+
+	// 2) Construye y envía POST al AGF destino
+	url := fmt.Sprintf("http://%s:8082/registerNewUser", agfDestIP)
+	body, _ := json.Marshal(gin.H{"supi": payload.Supi})
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("[Controller] error enviando /registerNewUser a %s: %v", agfDestIP, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "AGF destino inalcanzable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Controller] registerNewUser returned status %s", resp.Status)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "AGF destino rechazó el registro"})
+		return
+	}
+
+	log.Printf("[Controller] registerNewUser enviado correctamente a %s para SUPI %s",
+		agfDestIP, payload.Supi)
+	c.JSON(http.StatusOK, gin.H{"message": "Orden de registro enviada al AGF destino"})
+}
+
+/*
+// handleHandoverCompleted: la lógica que, al recibir esta petición,
+// hará internamente un "user deregister" al AGF origen y "user register" al AGF destino.
+func handleHandoverCompleted(c *gin.Context) {
+
+	var payload HandoverCompleted
+
+	if err := c.ShouldBindJSON(&payload); err != nil || payload.Supi == "" || payload.GnbId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Faltan parámetros"})
+		return
+	}
+
+	log.Printf("[Controller] HandoverCompleted: SUPI=%s, GNB destino=%s", payload.Supi, payload.GnbId)
+
+	// Determinar IPs de AGF destino y origen
+	// El gNBID es el que llega a esta petición es el del target
+	var agfDestIP, agfOriginIP, originGnb string
+	switch payload.GnbId {
+	case "000102":
+		agfDestIP = "10.2.0.24"
+		agfOriginIP = "10.2.0.86"
+		originGnb = "000103"
+	case "000103":
+		agfDestIP = "10.2.0.86"
+		agfOriginIP = "10.2.0.24"
+		originGnb = "000102"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown target GnbId"})
+		return
+	}
+
+	// Verificar que el usuario existe
+	user, exists := userMap[payload.Supi]
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Usuario no encontrado"})
+		return
+	}
+
+	// Deregistrar en AGF origen
+	deregURL := fmt.Sprintf("http://%s:8082/user_deregister", agfOriginIP)
+	bodyDereg := gin.H{"supi": payload.Supi}
+	jsonDereg, _ := json.Marshal(bodyDereg)
+	respDereg, err := http.Post(deregURL, "application/json", bytes.NewBuffer(jsonDereg))
+	if err != nil || respDereg.StatusCode != http.StatusOK {
+		log.Printf("[Controller] Error en deregister de %s: %v", originGnb, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Deregister fallido en AGF origen"})
+		return
+	}
+	defer respDereg.Body.Close()
+	log.Printf("[Controller] Usuario %s desregistrado en AGF %s", payload.Supi, originGnb)
+
+	// Registrar en AGF destino
+	registerURL := fmt.Sprintf("http://%s:8082/user_registration", agfDestIP)
+	bodyReg := gin.H{
+		"supi":   payload.Supi,
+		"imsi":   user.IMSI,
+		"gnb_id": payload.GnbId,
+	}
+	jsonReg, _ := json.Marshal(bodyReg)
+	respReg, err := http.Post(registerURL, "application/json", bytes.NewBuffer(jsonReg))
+	if err != nil || respReg.StatusCode != http.StatusOK {
+		log.Printf("[Controller] Error en register de %s: %v", payload.GnbId, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Register fallido en AGF destino"})
+		return
+	}
+	defer respReg.Body.Close()
+	log.Printf("[Controller] Usuario %s registrado en AGF %s", payload.Supi, payload.GnbId)
+
+	// Actualizar userMap
+	user.GnbID = payload.GnbId
+	userMap[payload.Supi] = user
+	for i, u := range users {
+		if u.Supi == payload.Supi {
+			users[i].GnbID = payload.GnbId
+			break
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("HandoverCompleted para SUPI %s, de %s a %s", payload.Supi, originGnb, payload.GnbId),
+	})
+}
+*/

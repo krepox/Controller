@@ -13,85 +13,111 @@ import (
 	"github.com/Rotchamar/dhcp/dhcpv4/server4"
 )
 
+// Reserved Ips
+var reservedIPs = map[string]struct{}{
+	//  ── subnet 10.2.0.0/26  (UE1 + AGF1) ──────────────────
+	"10.2.0.1": {}, "10.2.0.2": {}, "10.2.0.3": {}, // UE-1
+	"10.2.0.22": {}, "10.2.0.23": {}, "10.2.0.24": {}, // AGF-1
+	//  ── subnet 10.2.0.64/26 (UE2 + AGF2) ─────────────────
+	"10.2.0.64": {}, "10.2.0.65": {}, "10.2.0.66": {}, // UE-2
+	"10.2.0.84": {}, "10.2.0.85": {}, "10.2.0.86": {}, // AGF-2
+}
+
 var DHCPClients Clients
 var EthConn EthSocketConn
 
-// Mutex y variable global para el targetGnbID
-var (
-	globalTargetGnb string
-	mu              sync.RWMutex
-)
+//TODO: check whether is still needed
+// Mutex y global to pass T-GNBiD
+//var (
+//	globalTargetGnb string
+//	mu              sync.RWMutex
+//)
 
+// Subnet and offset params
 var (
-	// IP base por GNB ID y usamos subredes completas
+	// IP base for GNB ID using whole subnets
+	subnetRanges = map[string]*net.IPNet{} //subnet /26 for each AGF
 
-	subnetRanges = map[string]*net.IPNet{}
-	// Para cada GNB, el siguiente offset (0,1,2,…)
+	// For each GNB, next offset (0,1,2,…)
 	nextOffset = make(map[string]uint32)
-	offsetsMu  sync.Mutex
+	// startings offsets inside each subnet:
+	startOffset = map[string]uint32{
+		"000102": 4, // 10.2.0.0 + 4  → 10.2.0.4
+		"000103": 3, // 10.2.0.64 + 3 → 10.2.0.67
+	}
+	muOffsets sync.Mutex
 
-	// La última IP calculada (puedes o no exponerla globalmente)
+	// Last assigned IP
 	assignedIP   net.IP
 	assignedIPMu sync.RWMutex
 )
 
-// Inicializa las subredes
+// Subnets start
 func init() {
-	// Definimos aquí las subredes que queremos
+	// We define desired subnets
+	//10.2.0.0/26  10.2.0.1 – 10.2.0.62  10.2.0.63 (broadcast) for connection UE1-AG1
+	//10.2.0.64/26 10.2.0.65 – 10.2.0.126 10.2.0.127 (broadcast) for connection UE2-AGF2
+
 	subnets := map[string]string{
-		"000102": "10.2.0.0/26",  // IPs 10.2.0.2 - 10.2.0.62
-		"000103": "10.2.0.64/26", // IPs 10.2.0.65 - 10.2.0.126
+		"000102": "10.2.0.0/26",
+		"000103": "10.2.0.64/26",
 	}
 
 	for gnb, cidr := range subnets {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Fatalf("Error al parsear CIDR %s para GNB %s: %v", cidr, gnb, err)
+			log.Fatalf("Error parsing CIDR %s for GNB %s: %v", cidr, gnb, err)
 		}
 		subnetRanges[gnb] = ipnet
 	}
 }
 
-// DecideIP calcula y almacena assignedIP = primera IP libre válida de la subred
 func DecideIP(targetGnbID string) {
-	offsetsMu.Lock()
-	defer offsetsMu.Unlock()
+	muOffsets.Lock()
+	defer muOffsets.Unlock()
 
 	ipnet, ok := subnetRanges[targetGnbID]
 	if !ok {
-		log.Printf(" No hay subred definida para GNB ID %s", targetGnbID)
-		assignedIP = net.IPv4(10, 255, 255, 254)
+		log.Printf("Subnet unknown for GNB %s", targetGnbID)
+		assignedIP = net.IPv4(10, 255, 255, 254) // Default-value
 		return
 	}
 
-	startIP := incrementIP(ipnet.IP, 2) // Saltamos .0 (red) y .1 (gateway)
-	off := nextOffset[targetGnbID]
+	base := startOffset[targetGnbID]      // Where starts
+	network := ipnet.IP.Mask(ipnet.Mask)  // network addres
+	startIP := incrementIP(network, base) // First allowed IP
 
-	candidate := incrementIP(startIP, off)
-	if !ipInSubnet(candidate, ipnet) || isBroadcast(candidate, ipnet) {
-		log.Printf("⚠️ No quedan IPs válidas disponibles en la subred para GNB ID %s", targetGnbID)
-		assignedIP = net.IPv4(10, 255, 255, 254)
-		return
+	for {
+		candidate := incrementIP(startIP, nextOffset[targetGnbID])
+
+		switch {
+		case !ipInSubnet(candidate, ipnet) || isBroadcast(candidate, ipnet):
+			log.Printf("No IPs left on subnet %s", targetGnbID)
+			assignedIP = net.IPv4(10, 255, 255, 254)
+			return
+
+		case isReserved(candidate):
+			nextOffset[targetGnbID]++
+			continue
+
+		default:
+			assignedIP = candidate
+			nextOffset[targetGnbID]++
+			log.Printf("[DecideIP] GNB %s → %s", targetGnbID, candidate)
+			return
+		}
 	}
-
-	nextOffset[targetGnbID] = off + 1
-
-	assignedIPMu.Lock()
-	assignedIP = candidate
-	assignedIPMu.Unlock()
-
-	log.Printf("[DecideIP] GNB ID: %s | Offset: %d | IP asignada: %s", targetGnbID, off, candidate)
 }
 
-// GetAssignedIP devuelve la IP calculada por la última llamada a DecideIP
+// Gets assigned Ip from last call to DecideIP
 func GetAssignedIP() net.IP {
 	assignedIPMu.RLock()
 	defer assignedIPMu.RUnlock()
-	log.Printf("[GetAssignedIP] Devolviendo IP asignada: %s", assignedIP.String())
+	log.Printf("[GetAssignedIP] MSR Devolviendo IP asignada: %s", assignedIP.String())
 	return assignedIP
 }
 
-// incrementIP suma "n" al valor de una IP
+// Adds nextOffset to Ip value
 func incrementIP(ip net.IP, n uint32) net.IP {
 	ip = ip.To4()
 	val := binary.BigEndian.Uint32(ip)
@@ -111,16 +137,22 @@ func isBroadcast(ip net.IP, subnet *net.IPNet) bool {
 	return binary.BigEndian.Uint32(ip4) == broadcast
 }
 
-// ipInSubnet comprueba si la IP está dentro de la subred
+// ipInSubnet checks whether IP is in the subnet
 func ipInSubnet(ip net.IP, subnet *net.IPNet) bool {
 	return subnet.Contains(ip)
 }
 
-func setGlobalTargetGnb(id string) {
-	mu.Lock()
-	globalTargetGnb = id
-	mu.Unlock()
+// isReserved returns true if IP is in ReservedIps
+func isReserved(ip net.IP) bool {
+	_, ok := reservedIPs[ip.String()]
+	return ok
 }
+
+// func setGlobalTargetGnb(id string) {
+// 	mu.Lock()
+// 	globalTargetGnb = id
+// 	mu.Unlock()
+// }
 
 func StartDHCPServer(interfaceName string) {
 	var err error
@@ -143,23 +175,24 @@ func StartDHCPServer(interfaceName string) {
 		log.Fatal(err)
 	}
 
-	log.Println(" DHCP Server corriendo en UDP :67")
+	log.Println(" DHCP Server running in UDP port:67")
 	server.Serve()
 }
 
-func TriggerDHCPClient(ueIP string, targerGnbID string) error {
-	setGlobalTargetGnb(targerGnbID)
-	DecideIP(targerGnbID) //llama a la función auxiliar para decidir la Ip en función del targetGnnID
+func TriggerDHCPClient(ueIP string, targetGnbID string) error {
+	//setGlobalTargetGnb(targetGnbID)
+	DecideIP(targetGnbID)
+
 	url := fmt.Sprintf("http://%s:8081/dhcp/start", ueIP)
-	log.Printf("Lanzando GET a %s", url)
+	log.Printf("[TriggerDHCPClient] Preparing GET a: %s", url)
 
 	client := http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("fallo al llamar a %s: %w", url, err)
+		return fmt.Errorf("[TriggerDHCPClient] Error sendind GET to :%s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
-	log.Printf(" Respuesta desde %s: %s", ueIP, resp.Status)
+	log.Printf("[TriggerDHCPClient] HTTP response: %s", resp.Status)
 	return nil
 }
